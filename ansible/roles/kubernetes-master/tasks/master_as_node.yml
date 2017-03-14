@@ -1,0 +1,41 @@
+#INSTALL ALSO DOCKER AND KUBELET TO USE MASTER AS NODE
+- template: src=../templates/virt7.repo.j2 dest=/etc/yum.repos.d/virt7.repo owner=root group=root mode=0644
+- template: src=../templates/docker.repo.j2 dest=/etc/yum.repos.d/dcoker.repo owner=root group=root mode=0644
+
+- copy: src=/tmp/kubernetes/kubernetes/server/kubernetes/server/bin/{{ item }} dest=/usr/bin remote_src=yes mode=755
+  with_items:
+    - kubelet
+    - kube-proxy
+    - kubectl
+  when: k8s_download.changed
+
+- template: src=../templates/usr_lib_systemd_system_{{ item }}.j2 dest=/usr/lib/systemd/system/{{ item }}
+  with_items:
+    - kube-proxy.service
+    - kubelet.service=
+- file: path=/var/lib/kubelet state=directory
+
+- template: src=../templates/etc_kubernetes_kubelet.j2 dest=/etc/kubernetes/kubelet owner=root group=root mode=0644
+
+- yum: name=docker-engine enablerepo=dockerrepo-testing disablerepo=extras
+- template: src=../templates/usr_lib_systemd_system_docker.service.j2 dest=/usr/lib/systemd/system/docker.service
+
+- service: name=docker state=started
+  ignore_errors: yes
+- shell:  ifconfig docker0 down
+  ignore_errors: yes
+- shell: brctl delbr docker0
+  ignore_errors: yes
+- shell: brctl addbr docker0
+  ignore_errors: yes
+- shell: source /run/flannel/subnet.env && ifconfig docker0 ${FLANNEL_SUBNET}
+  ignore_errors: yes
+
+- service: name={{ item }} state=restarted enabled=yes
+  with_items:
+    - docker
+
+- systemd: state=restarted daemon_reload=yes name={{ item }}
+  with_items:
+    - kube-proxy
+    - kubelet

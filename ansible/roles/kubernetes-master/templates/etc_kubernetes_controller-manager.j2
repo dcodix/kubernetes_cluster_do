@@ -1,0 +1,8 @@
+###
+# The following values are used to configure the kubernetes controller-manager
+
+# defaults from config and apiserver should be adequate
+
+# Add your own!
+#KUBE_CONTROLLER_MANAGER_ARGS="--service_account_private_key_file=/etc/pki/kubernetes/apiserver.key"
+KUBE_CONTROLLER_MANAGER_ARGS="--root-ca-file=/srv/kubernetes/ca.crt --service-account-private-key-file=/srv/kubernetes/server.key --node-monitor-grace-period=20s --pod-eviction-timeout=20s"

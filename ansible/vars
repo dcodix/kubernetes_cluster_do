@@ -1,0 +1,2 @@
+kubeconfig_user: kubelet
+kubeconfig_cluster: default-cluster

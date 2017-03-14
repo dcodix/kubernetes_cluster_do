@@ -1,0 +1,10 @@
+---
+- name: install packages
+  yum: name={{ item }} state=present
+  with_items:
+    - epel-release
+    - vim
+    - git
+    - bridge-utils
+    - telnet
+

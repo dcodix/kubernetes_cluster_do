@@ -1,0 +1,113 @@
+---
+- name: Create certificates directory
+  file: path=/srv/kubernetes/ state=directory
+- name: Copy ca.crt
+  template: src=../templates/ca.crt.j2 dest=/srv/kubernetes/ca.crt
+- name: Copy server.key
+  template: src=../templates/server.key.j2 dest=/srv/kubernetes/server.key
+- name: Copy server.crt
+  template: src=../templates/server.crt.j2 dest=/srv/kubernetes/server.crt
+- name: Create token api server directory
+  file: path=/srv/kube-apiserver/ state=directory
+- name: Copy known_tokens.csv
+  template: src=../templates/known_tokens.csv.j2 dest=/srv/kube-apiserver/known_tokens.csv
+
+- name: Copy virt7 repo
+  template: src=../templates/virt7.repo.j2 dest=/etc/yum.repos.d/virt7.repo owner=root group=root mode=0644
+
+- name: Make sure kubernetes config folder exist
+  file: path=/etc/kubernetes state=directory
+
+- name: Create kube user
+  user: name=kube comment="Kubernetes user" shell=/sbin/nologin home=/
+- name: Create tmp directory
+  file: path=/tmp/kubernetes state=directory
+- name: Get kubernetes source
+  get_url: url=https://github.com/kubernetes/kubernetes/releases/download/v1.4.9/kubernetes.tar.gz dest=/tmp/kubernetes/kubernetes.tar.gz
+  register: k8s_download
+- name: Unarchive kubernetes source (1)
+  unarchive: src=/tmp/kubernetes/kubernetes.tar.gz dest=/tmp/kubernetes/ remote_src=yes
+  when: k8s_download.changed
+- name: Unarchive kubernetes source (2)
+  unarchive: src=/tmp/kubernetes/kubernetes/server/kubernetes-server-linux-amd64.tar.gz dest=/tmp/kubernetes/kubernetes/server/ remote_src=yes
+  when: k8s_download.changed
+- name: Copy kubernetes binary to executable path
+  copy: src=/tmp/kubernetes/kubernetes/server/kubernetes/server/bin/{{ item }} dest=/usr/bin remote_src=yes mode=755
+  with_items:
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+    - kubectl
+  when: k8s_download.changed
+- name: Copy systemd service configurations
+  template: src=../templates/usr_lib_systemd_system_{{ item }}.j2 dest=/usr/lib/systemd/system/{{ item }}
+  with_items:
+    - kube-apiserver.service
+    - kube-controller-manager.service
+    - kube-scheduler.service
+
+- name: Install etcd and flanneld
+  yum: name={{ item }} enablerepo=virt7-docker-common-release
+  with_items:
+    - etcd
+    - flannel
+
+- name: Copy kubernetes config file
+  template: src=../templates/etc_kubernetes_config.j2 dest=/etc/kubernetes/config owner=root group=root mode=0644
+
+- name: Add master to /etc/hosts
+  lineinfile: dest=/etc/hosts line="{{ ansible_default_ipv4.address }} kubernetes-master"
+- name: (TMP) Add host example to /etc/hosts
+  lineinfile: dest=/etc/hosts line="{{ kubernetes_minion_1_ipv4 | default('X.X.X.X') }} kubernetes-minion-1"
+
+- name: Stop and disable firewalls
+  service: name={{ item }} state=stopped enabled=no
+  with_items:
+    - firewalld
+    - iptables-services
+  ignore_errors: yes
+
+- name: Copy etcd config
+  template: src=../templates/etc_etcd_etcd.conf.j2 dest=/etc/etcd/etcd.conf owner=root group=root mode=0644
+
+- name: Copy kubernetes apiserver config
+  template: src=../templates/etc_kubernetes_apiserver.j2 dest=/etc/kubernetes/apiserver owner=root group=root mode=0644
+- name: Copy kubernetes controller-manager config
+  template: src=../templates/etc_kubernetes_controller-manager.j2 dest=/etc/kubernetes/controller-manager owner=root group=root mode=0644
+
+- name: Make sure /etc/pki/kubernetes directroy exist
+  file: path=/etc/pki/kubernetes state=directory
+- name: Copy kubernetes apiserver key
+  template: src=../templates/etc_pki_kubernetes_apiserver.key.j2 dest=/etc/pki/kubernetes/apiserver.key owner=root group=root mode=0644
+
+- name: Start etcd
+  service: name=etcd state=started enabled=yes
+
+- name: Check if network is registered on etcd
+  shell: 'etcdctl ls /kube-centos/network'
+  register: etcdctl_dir_ls
+  failed_when: "'IT WILL NEVER FAIL' in etcdctl_dir_ls.stderr"
+- name: Create etcd kube network directory
+  shell: 'etcdctl mkdir /kube-centos/network'
+  when: "'Key not found' in etcdctl_dir_ls.stderr"
+- name: Create kube network config
+  shell: 'etcdctl mk /kube-centos/network/config "{ \"Network\": \"172.30.0.0/16\", \"SubnetLen\": 24, \"Backend\": { \"Type\": \"vxlan\" } }"'
+  when: "'Key not found' in etcdctl_dir_ls.stderr"
+
+- name: Copy flanneld config
+  template: src=../templates/etc_sysconfig_flanneld.j2 dest=/etc/sysconfig/flanneld owner=root group=root mode=0644
+
+- name: Restart etcd and flanneld
+  service: name={{ item }} state=restarted enabled=yes
+  with_items:
+    - etcd
+    - flanneld
+
+- name: Restart kube services
+  systemd: state=restarted daemon_reload=yes name={{ item }}
+  with_items:
+    - kube-apiserver
+    - kube-controller-manager
+    - kube-scheduler
+
+#- include: master_as_node.yml

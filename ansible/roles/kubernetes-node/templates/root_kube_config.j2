@@ -1,0 +1,20 @@
+apiVersion: v1
+clusters:
+- cluster:
+    certificate-authority-data: {{ vault_kubeconfig_api_ca }}
+    server: https://kubernetes-master:6443
+  name: {{ kubeconfig_cluster }}
+contexts:
+- context:
+    cluster: {{ kubeconfig_cluster }}
+    user: {{ kubeconfig_user }}
+  name: default-context
+current-context: default-context
+kind: Config
+preferences: {}
+users:
+- name: {{ kubeconfig_user }}
+  user:
+    client-certificate-data: {{ vault_kubeconfig_client_crt }}
+    client-key-data: {{ vault_kubeconfig_client_key }}
+    token: {{ vault_api_token }}

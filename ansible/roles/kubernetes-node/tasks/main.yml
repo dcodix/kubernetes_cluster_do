@@ -1,0 +1,132 @@
+---
+- name: Create certificates directory
+  file: path=/srv/kubernetes/ state=directory
+- name: Copy ca.crt
+  template: src=../templates/ca.crt.j2 dest=/srv/kubernetes/ca.crt
+- name: Copy kubernetes-node-0.key
+  template: src=../templates/kubernetes-node-0.key.j2 dest=/srv/kubernetes/kubernetes-node-0.key
+- name: Copy kubernetes-node-0.crt
+  template: src=../templates/kubernetes-node-0.crt.j2 dest=/srv/kubernetes/kubernetes-node-0.crt
+- name: Create kubeconfig directory
+  file: path=/root/.kube state=directory
+- name: Copy kubeconfig
+  template: src=../templates/root_kube_config.j2 dest=/root/.kube/config
+- name: Create kubernetes directory
+  file: path=/etc/kubernetes state=directory
+- name: Copy kubeconfig (2)
+  template: src=../templates/etc_kubernetes_kubeconfig.yaml.j2 dest=/etc/kubernetes/kubeconfig.yaml
+
+- name: Copy virt7 repo
+  template: src=../templates/virt7.repo.j2 dest=/etc/yum.repos.d/virt7.repo owner=root group=root mode=0644
+- name: Copy docker repo
+  template: src=../templates/docker.repo.j2 dest=/etc/yum.repos.d/dcoker.repo owner=root group=root mode=0644
+
+- yum: name={{ item }} enablerepo=virt7-docker-common-release disablerepo=extras
+  with_items:
+    - flannel
+
+- name: Create directory /etc/kubernetes
+  file: path=/etc/kubernetes state=directory
+
+- name: Create kube user
+  user: name=kube comment="Kubernetes user" shell=/sbin/nologin home=/
+
+- name: Create directory /var/run/kubernetes
+  file: path=/var/run/kubernetes state=directory owner=kube
+
+- name: Create tmp directory /tmp/kubernetes
+  file: path=/tmp/kubernetes state=directory
+- name: Download kubernetes source
+  get_url: url=https://github.com/kubernetes/kubernetes/releases/download/v1.4.9/kubernetes.tar.gz dest=/tmp/kubernetes/kubernetes.tar.gz
+  register: k8s_download
+- name: Unarchive kubernetes source (1)
+  unarchive: src=/tmp/kubernetes/kubernetes.tar.gz dest=/tmp/kubernetes/ remote_src=yes
+  when: k8s_download.changed
+- name: Unarchive kubernetes source (2)
+  unarchive: src=/tmp/kubernetes/kubernetes/server/kubernetes-server-linux-amd64.tar.gz dest=/tmp/kubernetes/kubernetes/server/ remote_src=yes
+  when: k8s_download.changed
+- name: Copy kubernetes binary to executable path
+  copy: src=/tmp/kubernetes/kubernetes/server/kubernetes/server/bin/{{ item }} dest=/usr/bin remote_src=yes mode=755
+  with_items:
+    - kubelet
+    - kube-proxy
+    - kubectl
+  when: k8s_download.changed
+- name: Copy systemd service configurations
+  template: src=../templates/usr_lib_systemd_system_{{ item }}.j2 dest=/usr/lib/systemd/system/{{ item }}
+  with_items:
+    - kube-proxy.service
+    - kubelet.service
+- name: Create directory /var/lib/kubelet
+  file: path=/var/lib/kubelet state=directory
+
+- name: Copy /etc/kubernetes/config file
+  template: src=../templates/etc_kubernetes_config.j2 dest=/etc/kubernetes/config owner=root group=root mode=0644
+- name: Copy /etc/kubernetes/kubelet file
+  template: src=../templates/etc_kubernetes_kubelet.j2 dest=/etc/kubernetes/kubelet owner=root group=root mode=0644
+
+- name: (TMP) Add host example to /etc/hosts
+  lineinfile: dest=/etc/hosts line="{{ kubernetes_master_ipv4 | default('X.X.X.X') }} kubernetes-master"
+- name: (TMP) Add host example to /etc/hosts
+  lineinfile: dest=/etc/hosts line="{{ ansible_default_ipv4.address }} kubernetes-minion-{{ minion_n | default(1)}}"
+
+- name: Stop firewall services
+  service: name={{ item }} state=stopped enabled=no
+  with_items:
+    - firewalld
+    - iptables-services
+  ignore_errors: yes
+
+- name: Copy /etc/sysconfig/flanneld file
+  template: src=../templates/etc_sysconfig_flanneld.j2 dest=/etc/sysconfig/flanneld owner=root group=root mode=0644
+
+- name: Install docker from repo
+  yum: name=docker-engine enablerepo=dockerrepo-testing disablerepo=extras
+- name: Copy /usr/lib/systemd/system/docker.service file
+  template: src=../templates/usr_lib_systemd_system_docker.service.j2 dest=/usr/lib/systemd/system/docker.service
+
+- name: Start docker service
+  service: name=docker state=started
+  ignore_errors: yes
+- name: Delete autocreated docker0 iface (1)
+  shell:  ifconfig docker0 down
+  ignore_errors: yes
+- name: Delete autocreated docker0 iface (2)
+  shell: brctl delbr docker0
+  ignore_errors: yes
+- name: Create docker0 iface
+  shell: brctl addbr docker0
+  ignore_errors: yes
+- name: Configure docker0 iface with flannel values
+  shell: source /run/flannel/subnet.env && ifconfig docker0 ${FLANNEL_SUBNET}
+  ignore_errors: yes
+
+- name: Start services
+  service: name={{ item }} state=restarted enabled=yes
+  with_items:
+    - flanneld
+    - docker
+
+- name: Restart services
+  service: name={{ item }} state=restarted enabled=yes
+  with_items:
+    - docker
+
+- name: Reload systemd config file and restart services
+  systemd: state=restarted daemon_reload=yes name={{ item }}
+  with_items:
+    - kube-proxy
+    - kubelet
+
+- name: iptables accept forwarfing docker0 to eth0
+  iptables: action=insert chain=FORWARD in_interface=docker0 out_interface=eth0 jump=ACCEPT comment="whithout this NodePort does not work"
+
+- name: iptables accept forwarfing eth0 to docker0
+  iptables: action=insert chain=FORWARD in_interface=eth0 out_interface=docker0 jump=ACCEPT comment="whithout this NodePort does not work"
+
+- name: iptables accept forwarfing docker0 to flannel.1
+  iptables: action=insert chain=FORWARD in_interface=docker0 out_interface=flannel.1 jump=ACCEPT comment="whithout this internode communication does not work"
+
+- name: iptables accept forwarfing flannel.1 to docker0
+  iptables: action=insert chain=FORWARD in_interface=flannel.1 out_interface=docker0 jump=ACCEPT comment="whithout this internode communication does not work"
+

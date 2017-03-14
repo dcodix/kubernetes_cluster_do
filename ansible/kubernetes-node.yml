@@ -1,0 +1,9 @@
+---
+- hosts: all
+  vars_files:
+    - vault
+    - vars
+  roles:
+    - base
+    - kubernetes-node
+
